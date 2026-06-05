@@ -66,10 +66,13 @@ jobs:
           $av = (Resolve-Path "3rdparty/QtAV/ffmpeg/QtAV-depends-windows-x86+x64").Path
           $env:INCLUDE = "$av/include;$env:QT_ROOT_DIR/include;$env:INCLUDE"
           $env:LIB = "$av/lib/x64;$env:QT_ROOT_DIR/lib;$env:LIB"
+          # QtAV sets CMAKE_CXX_STANDARD=11 when D3D11 is detected; Qt 5.15 needs C++17 in Packet.cpp
+          $env:CL = "/std:c++17 $env:CL".Trim()
           cmake -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_CXX_STANDARD=17 `
             -DCMAKE_CXX_STANDARD_REQUIRED=ON `
+            -DCMAKE_CXX_FLAGS="/std:c++17" `
             -DQTDIR="$env:QT_ROOT_DIR" `
             -DBUILD_EXAMPLES=OFF `
             -DBUILD_TESTS=OFF `
