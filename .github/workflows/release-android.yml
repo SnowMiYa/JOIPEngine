@@ -55,13 +55,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build perl pkg-config openjdk-11-jdk
+            cmake ninja-build perl pkg-config
 
-      - name: Setup JDK
+      # cmdline-tools 16.x requires JDK 17+ for sdkmanager --licenses
+      - name: Setup JDK 17 (Android SDK tools)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '11'
+          java-version: '17'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -81,6 +82,13 @@ jobs:
           echo "ANDROID_NDK=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK_VERSION }}" >> "$GITHUB_ENV"
           echo "CMAKE_ANDROID_NDK=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK_VERSION }}" >> "$GITHUB_ENV"
           echo "ANDROID_ARCH_ABI=${{ inputs.android_abi }}" >> "$GITHUB_ENV"
+
+      # android-sources uses Gradle 3.5 / AGP 3.5 — keep JDK 11 for androiddeployqt
+      - name: Setup JDK 11 (Gradle APK build)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
 
       - name: Setup ccache
         run: |
