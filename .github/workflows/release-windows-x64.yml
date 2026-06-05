@@ -1,0 +1,142 @@
+name: Release Windows x64
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (e.g. v1.8.0). Leave empty to use v{version} from CMakeLists.txt'
+        required: false
+        type: string
+      create_release:
+        description: 'Create a GitHub Release and upload the package'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  QT_VERSION: '5.15.2'
+  QT_ARCH: win64_msvc2019_64
+  CMAKE_BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Perl and pkg-config
+        run: |
+          choco install strawberryperl pkgconfiglite -y --no-progress
+          echo "C:\Program Files\Strawberry\perl\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "C:\Program Files\pkgconfiglite\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: ${{ env.QT_ARCH }}
+          cache: true
+          modules: >-
+            qt3d
+            qtbase
+            qtdeclarative
+            qtmultimedia
+            qtnetwork
+            qtquickcontrols2
+            qtsvg
+            qttools
+            qtwebchannel
+            qtwebsockets
+            qtwinextras
+            qtxmlpatterns
+
+      - name: Build and install QtAV
+        shell: pwsh
+        run: |
+          cmake -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DQTDIR="$env:QT_ROOT_DIR" `
+            -DBUILD_EXAMPLES=OFF `
+            -DBUILD_TESTS=OFF `
+            -DBUILD_PLAYERS=OFF `
+            -S 3rdparty/QtAV `
+            -B build-qtav
+          cmake --build build-qtav --parallel
+          cmake --install build-qtav
+
+      - name: Build and install JOIPEngine
+        shell: pwsh
+        run: |
+          cmake -G Ninja `
+            -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
+            -S . `
+            -B build
+          cmake --build build --parallel
+          cmake --build build --target install
+
+      - name: Resolve version and package name
+        id: meta
+        shell: pwsh
+        run: |
+          $major = (Select-String -Path CMakeLists.txt -Pattern 'set\(JOIP_VERSION_MAJOR (\d+)\)' | ForEach-Object { $_.Matches.Groups[1].Value })
+          $minor = (Select-String -Path CMakeLists.txt -Pattern 'set\(JOIP_VERSION_MINOR (\d+)\)' | ForEach-Object { $_.Matches.Groups[1].Value })
+          $patch = (Select-String -Path CMakeLists.txt -Pattern 'set\(JOIP_VERSION_PATCH (\d+)\)' | ForEach-Object { $_.Matches.Groups[1].Value })
+          $version = "$major.$minor.$patch"
+          $tag = '${{ inputs.release_tag }}'.Trim()
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $tag = "v$version"
+          }
+          $asset = "JOIPEngine-$version-windows-x64.zip"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "asset=$asset" >> $env:GITHUB_OUTPUT
+
+      - name: Create zip package
+        shell: pwsh
+        run: |
+          $deploy = Join-Path (Resolve-Path build) "deploy"
+          if (-not (Test-Path $deploy)) {
+            throw "Deploy directory not found: $deploy"
+          }
+          $zip = "${{ steps.meta.outputs.asset }}"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path (Join-Path $deploy '*') -DestinationPath $zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.asset }}
+          path: ${{ steps.meta.outputs.asset }}
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: inputs.create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: JOIPEngine ${{ steps.meta.outputs.version }} (Windows x64)
+          body: |
+            Windows 64-bit build of JOIPEngine ${{ steps.meta.outputs.version }}.
+
+            Extract the archive and run `bin\JOIPEngine.exe`.
+
+            Optional: for Buttplug device support, download `intiface-engine` from
+            https://github.com/intiface/intiface-engine/releases and place the
+            executable in `plugins/buttplug/` (see project README).
+          files: ${{ steps.meta.outputs.asset }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
