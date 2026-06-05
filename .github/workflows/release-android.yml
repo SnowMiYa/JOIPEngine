@@ -92,12 +92,21 @@ jobs:
 
       - name: Setup ccache
         run: |
-          curl -fsSL "https://github.com/ccache/ccache/releases/download/v${CCACHE_VERSION}/ccache-${CCACHE_VERSION}-linux-x86_64.tar.xz" -o /tmp/ccache.tar.xz
+          set -euo pipefail
+          ver="${CCACHE_VERSION}"
+          curl -fsSL "https://github.com/ccache/ccache/releases/download/v${ver}/ccache-${ver}-linux-x86_64.tar.xz" -o /tmp/ccache.tar.xz
           tar -xf /tmp/ccache.tar.xz -C /tmp
-          echo "/tmp/ccache-${CCACHE_VERSION}-linux-x86_64" >> "$GITHUB_PATH"
-          ccache --version
-          ccache -z
-          ccache -p
+          ccache_bin=$(find /tmp -maxdepth 2 -type f -name ccache -perm -111 | head -1)
+          if [ -z "$ccache_bin" ]; then
+            echo "ccache binary not found under /tmp" >&2
+            exit 1
+          fi
+          ccache_dir=$(dirname "$ccache_bin")
+          echo "$ccache_dir" >> "$GITHUB_PATH"
+          # GITHUB_PATH applies from the next step; use full path here
+          "$ccache_bin" --version
+          "$ccache_bin" -z
+          "$ccache_bin" -p
 
       - name: Restore ccache
         uses: actions/cache@v4
