@@ -159,6 +159,119 @@ jobs:
           ccache -s
           Write-Host "::endgroup::"
 
+      # README: cmake install leaves empty license/help and no buttplug docs;
+      # JOIPDeploy also copies Qt5Quick* link artifacts (.prl/.lib) into bin/.
+      - name: Finalize deploy package
+        shell: pwsh
+        run: |
+          $repo = (Get-Location).Path
+          $deploy = Join-Path (Resolve-Path build) "deploy"
+          if (-not (Test-Path $deploy)) {
+            throw "Deploy directory not found: $deploy"
+          }
+
+          function Copy-DeployFile([string]$DestRel, [string]$SrcRel) {
+            $dest = Join-Path $deploy $DestRel
+            $src = Join-Path $repo $SrcRel
+            if (-not (Test-Path -LiteralPath $src)) {
+              Write-Warning "Missing source, skipped: $SrcRel"
+              return
+            }
+            $destDir = Split-Path -Parent $dest
+            if ($destDir -and -not (Test-Path -LiteralPath $destDir)) {
+              New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+            }
+            Copy-Item -LiteralPath $src -Destination $dest -Force
+          }
+
+          Write-Host "::group::Copy license files"
+          $licenseFiles = @(
+            @('license/LICENSE.txt', 'LICENSE.txt'),
+            @('license/better-enums/LICENSE.md', '3rdparty/better-enums/LICENSE.md'),
+            @('license/extra-cmake-modules/COPYING-CMAKE-SCRIPTS', 'cmake/extra-cmake-modules/COPYING-CMAKE-SCRIPTS'),
+            @('license/fonts/CloisterBlackLicence.txt', 'resources/fonts/CloisterBlackLicence.txt'),
+            @('license/fonts/End User Licence Agreement.txt', 'resources/fonts/End User Licence Agreement.txt'),
+            @('license/fonts/Font License.txt', 'resources/fonts/Font License.txt'),
+            @('license/img/Save License.txt', 'resources/style/img/Save License.txt'),
+            @('license/img/spinner_copyright.txt', 'resources/gif/spinner_copyright.txt'),
+            @('license/json/CODE_OF_CONDUCT.md', '3rdparty/json/CODE_OF_CONDUCT.md'),
+            @('license/json/LICENSE.MIT', '3rdparty/json/LICENSE.MIT'),
+            @('license/json-schema-validator/LICENSE', '3rdparty/json-schema-validator/LICENSE'),
+            @('license/libqpcx/LICENSE.LGPL', '3rdparty/libqpcx/LICENSE.LGPL'),
+            @('license/libqtlua/COPYING', '3rdparty/libqtlua-2.1/COPYING'),
+            @('license/libqtlua/COPYING.LESSER', '3rdparty/libqtlua-2.1/COPYING.LESSER'),
+            @('license/libzip/LICENSE', '3rdparty/libzip/LICENSE'),
+            @('license/lua_sandbox/MIT-LICENSE.txt', '3rdparty/lua_sandbox/lua_sandbox/MIT-LICENSE.txt'),
+            @('license/MRichTextEditor/LICENSE.LGPL', '3rdparty/MRichTextEditor/LICENSE.LGPL'),
+            @('license/MRichTextEditor/LGPL_EXCEPTION.txt', '3rdparty/MRichTextEditor/LGPL_EXCEPTION.txt'),
+            @('license/nodeeditor/LICENSE', '3rdparty/nodeeditor/LICENSE'),
+            @('license/openssl/openssl_license.txt', '3rdparty/win_openssl/LICENSE'),
+            @('license/physfs/LICENSE.txt', '3rdparty/physfs-3.0.2/LICENSE.txt'),
+            @('license/QButtplug/LICENSE', '3rdparty/QButtplug/LICENSE'),
+            @('license/qtav/gpl-3.0.txt', '3rdparty/QtAV/gpl-3.0.txt'),
+            @('license/qtav/lgpl-2.1.txt', '3rdparty/QtAV/lgpl-2.1.txt'),
+            @('license/SortFilterProxyModel/LICENSE', '3rdparty/SortFilterProxyModel/LICENSE'),
+            @('license/syntax-highlighting/GPL-2.0-only.txt', '3rdparty/syntax-highlighting/LICENSES/GPL-2.0-only.txt'),
+            @('license/syntax-highlighting/LGPL-2.0-only.txt', '3rdparty/syntax-highlighting/LICENSES/LGPL-2.0-only.txt'),
+            @('license/syntax-highlighting/LGPL-2.0-or-later.txt', '3rdparty/syntax-highlighting/LICENSES/LGPL-2.0-or-later.txt'),
+            @('license/syntax-highlighting/LGPL-2.1-or-later.txt', '3rdparty/syntax-highlighting/LICENSES/LGPL-2.1-or-later.txt'),
+            @('license/syntax-highlighting/MIT.txt', '3rdparty/syntax-highlighting/LICENSES/MIT.txt'),
+            @('license/WinToast/LICENSE.txt', '3rdparty/WinToast/LICENSE.txt'),
+            @('license/xmldom/LICENSE', '3rdparty/xmldom/LICENSE'),
+            @('license/xmldom/readme.md', '3rdparty/xmldom/readme.md'),
+            @('license/zlib/LICENSE', '3rdparty/zlib-1.3/LICENSE')
+          )
+          foreach ($pair in $licenseFiles) {
+            Copy-DeployFile $pair[0] $pair[1]
+          }
+          $luaDoc = Join-Path $repo '3rdparty/Lua/lua-5.4.4/doc'
+          if (Test-Path -LiteralPath $luaDoc) {
+            Copy-Item -LiteralPath $luaDoc -Destination (Join-Path $deploy 'license/Lua') -Recurse -Force
+          } else {
+            Write-Warning 'Missing Lua doc folder: 3rdparty/Lua/lua-5.4.4/doc'
+          }
+          Write-Host "::endgroup::"
+
+          Write-Host "::group::Copy help and buttplug plugin docs"
+          $helpSrc = Join-Path $repo 'resources/help'
+          if (Test-Path -LiteralPath $helpSrc) {
+            Copy-Item -LiteralPath $helpSrc -Destination (Join-Path $deploy 'help') -Recurse -Force
+          }
+          $buttplug = Join-Path $deploy 'plugins/buttplug'
+          New-Item -ItemType Directory -Path $buttplug -Force | Out-Null
+          Copy-DeployFile 'plugins/buttplug/README.md' '3rdparty/intiface-engine/README.md'
+          Copy-DeployFile 'plugins/buttplug/CHANGELOG.md' '3rdparty/intiface-engine/CHANGELOG.md'
+          New-Item -ItemType Directory -Path (Join-Path $deploy 'data') -Force | Out-Null
+          Write-Host "::endgroup::"
+
+          Write-Host "::group::Remove non-runtime build artifacts"
+          $bin = Join-Path $deploy 'bin'
+          if (Test-Path -LiteralPath $bin) {
+            Get-ChildItem -LiteralPath $bin -File -Recurse | Where-Object {
+              $_.Extension -in '.lib', '.prl', '.exp'
+            } | ForEach-Object {
+              Write-Host "Removing $($_.FullName.Substring($deploy.Length + 1))"
+              Remove-Item -LiteralPath $_.FullName -Force
+            }
+          }
+          $lib = Join-Path $deploy 'lib'
+          if (Test-Path -LiteralPath $lib) {
+            Get-ChildItem -LiteralPath $lib -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "Removing $($_.FullName.Substring($deploy.Length + 1))"
+              Remove-Item -LiteralPath $_.FullName -Force
+            }
+            if (-not (Get-ChildItem -LiteralPath $lib -Force -ErrorAction SilentlyContinue)) {
+              Remove-Item -LiteralPath $lib -Force -Recurse
+            }
+          }
+          Write-Host "::endgroup::"
+
+          Write-Host "Deploy summary:"
+          Get-ChildItem -LiteralPath $deploy -Directory | ForEach-Object {
+            $count = (Get-ChildItem -LiteralPath $_.FullName -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object).Count
+            Write-Host "  $($_.Name)/ : $count files"
+          }
+
       - name: Resolve version and package name
         id: meta
         shell: pwsh
