@@ -11,7 +11,7 @@ on:
 env:
   QT_VERSION: '5.15.2'
   QT_ARCH: win64_msvc2019_64
-  CMAKE_BUILD_TYPE: RelWithDebInfo
+  CMAKE_BUILD_TYPE: Release
 
 jobs:
   build-and-release:
@@ -36,25 +36,17 @@ jobs:
         with:
           arch: x64
 
+      # Default install includes Qt Base / 3D / Multimedia / QML / etc.
+      # `modules` is only for add-ons (qtcharts, qtwebengine, ...); see:
+      #   aqt list-qt windows desktop --modules 5.15.2 win64_msvc2019_64
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
           arch: ${{ env.QT_ARCH }}
           cache: true
-          modules: >-
-            qt3d
-            qtbase
-            qtdeclarative
-            qtmultimedia
-            qtnetwork
-            qtquickcontrols2
-            qtsvg
-            qttools
-            qtwebchannel
-            qtwebsockets
-            qtwinextras
-            qtxmlpatterns
+          install-deps: false
+          setup-python: false
 
       - name: Build and install QtAV
         shell: pwsh
