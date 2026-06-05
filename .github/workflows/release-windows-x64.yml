@@ -7,11 +7,6 @@ on:
         description: 'Release tag (e.g. v1.8.0). Leave empty to use v{version} from CMakeLists.txt'
         required: false
         type: string
-      create_release:
-        description: 'Create a GitHub Release and upload the package'
-        required: false
-        type: boolean
-        default: true
 
 env:
   QT_VERSION: '5.15.2'
@@ -120,23 +115,3 @@ jobs:
           name: ${{ steps.meta.outputs.asset }}
           path: ${{ steps.meta.outputs.asset }}
           if-no-files-found: error
-
-      - name: Create GitHub Release
-        if: inputs.create_release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: JOIPEngine ${{ steps.meta.outputs.version }} (Windows x64)
-          body: |
-            Windows 64-bit build of JOIPEngine ${{ steps.meta.outputs.version }}.
-
-            Extract the archive and run `bin\JOIPEngine.exe`.
-
-            Optional: for Buttplug device support, download `intiface-engine` from
-            https://github.com/intiface/intiface-engine/releases and place the
-            executable in `plugins/buttplug/` (see project README).
-          files: ${{ steps.meta.outputs.asset }}
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          fail_on_unmatched_files: true
