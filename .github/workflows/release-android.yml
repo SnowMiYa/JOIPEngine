@@ -22,13 +22,6 @@ env:
   ANDROID_API: '21'
   ANDROID_SDK_BUILD_TOOLS: '31.0.0'
   ANDROID_NDK_VERSION: '21.3.6528147'
-  CCACHE_VERSION: '4.10.2'
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_BASEDIR: ${{ github.workspace }}
-  CCACHE_COMPRESS: true
-  CCACHE_COMPRESSLEVEL: 6
-  CCACHE_MAXSIZE: 2G
-  CCACHE_SLOPPINESS: time_macros,locale,pch_defines,include_file_mtime,include_file_ctime
 
 jobs:
   build-and-release:
@@ -90,33 +83,6 @@ jobs:
           distribution: temurin
           java-version: '11'
 
-      - name: Setup ccache
-        run: |
-          set -euo pipefail
-          ver="${CCACHE_VERSION}"
-          curl -fsSL "https://github.com/ccache/ccache/releases/download/v${ver}/ccache-${ver}-linux-x86_64.tar.xz" -o /tmp/ccache.tar.xz
-          tar -xf /tmp/ccache.tar.xz -C /tmp
-          ccache_bin=$(find /tmp -maxdepth 2 -type f -name ccache -perm -111 | head -1)
-          if [ -z "$ccache_bin" ]; then
-            echo "ccache binary not found under /tmp" >&2
-            exit 1
-          fi
-          ccache_dir=$(dirname "$ccache_bin")
-          echo "$ccache_dir" >> "$GITHUB_PATH"
-          # GITHUB_PATH applies from the next step; use full path here
-          "$ccache_bin" --version
-          "$ccache_bin" -z
-          "$ccache_bin" -p
-
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: .ccache
-          key: joip-ccache-android-${{ runner.os }}-qt${{ env.QT_VERSION }}-${{ inputs.android_abi }}-${{ hashFiles('.github/workflows/release-android.yml') }}
-          restore-keys: |
-            joip-ccache-android-${{ runner.os }}-qt${{ env.QT_VERSION }}-${{ inputs.android_abi }}-
-            joip-ccache-android-${{ runner.os }}-qt${{ env.QT_VERSION }}-
-
       - name: Install Qt for Android
         uses: jurplel/install-qt-action@v4
         with:
@@ -177,8 +143,6 @@ jobs:
           cmake -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
             -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_ANDROID_NDK="$CMAKE_ANDROID_NDK" \
             -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
             -DANDROID_ABI=${{ inputs.android_abi }} \
@@ -210,8 +174,6 @@ jobs:
           cmake -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
             -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_ANDROID_NDK="$CMAKE_ANDROID_NDK" \
             -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
             -DANDROID_ABI=${{ inputs.android_abi }} \
@@ -231,10 +193,6 @@ jobs:
 
           echo "::group::JOIPEngine — Create APK"
           cmake --build build-android --target create-apk-JOIPEngine
-          echo "::endgroup::"
-
-          echo "::group::ccache stats (final)"
-          ccache -s
           echo "::endgroup::"
 
       - name: Resolve version and package name
