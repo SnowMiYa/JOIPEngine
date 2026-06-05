@@ -9,8 +9,9 @@ on:
         type: string
 
 env:
-  QT_VERSION: '5.15.2'
-  QT_ARCH: win64_msvc2019_64
+  # Match project README (5.14.x + msvc2017); 5.15 removed QFileDialogPrivate::workingDirectory
+  QT_VERSION: '5.14.2'
+  QT_ARCH: win64_msvc2017_64
   CMAKE_BUILD_TYPE: Release
 
 jobs:
@@ -38,7 +39,7 @@ jobs:
 
       # Default install includes Qt Base / 3D / Multimedia / QML / etc.
       # `modules` is only for add-ons (qtcharts, qtwebengine, ...); see:
-      #   aqt list-qt windows desktop --modules 5.15.2 win64_msvc2019_64
+      #   aqt list-qt windows desktop --modules 5.14.2 win64_msvc2017_64
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -66,33 +67,49 @@ jobs:
           $av = (Resolve-Path "3rdparty/QtAV/ffmpeg/QtAV-depends-windows-x86+x64").Path
           $env:INCLUDE = "$av/include;$env:QT_ROOT_DIR/include;$env:INCLUDE"
           $env:LIB = "$av/lib/x64;$env:QT_ROOT_DIR/lib;$env:LIB"
-          # QtAV sets CMAKE_CXX_STANDARD=11 when D3D11 is detected; Qt 5.15 needs C++17 in Packet.cpp
-          $env:CL = "/std:c++17 $env:CL".Trim()
+          Write-Host "::group::QtAV — CMake configure"
           cmake -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_CXX_STANDARD=17 `
-            -DCMAKE_CXX_STANDARD_REQUIRED=ON `
-            -DCMAKE_CXX_FLAGS="/std:c++17" `
             -DQTDIR="$env:QT_ROOT_DIR" `
             -DBUILD_EXAMPLES=OFF `
             -DBUILD_TESTS=OFF `
             -DBUILD_PLAYERS=OFF `
             -S 3rdparty/QtAV `
             -B build-qtav
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "::endgroup::"
+
+          Write-Host "::group::QtAV — CMake build"
           cmake --build build-qtav --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "::endgroup::"
+
+          Write-Host "::group::QtAV — CMake install"
           cmake --install build-qtav
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "::endgroup::"
 
       - name: Build and install JOIPEngine
         shell: pwsh
         run: |
+          Write-Host "::group::JOIPEngine — CMake configure"
           cmake -G Ninja `
             -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
             -S . `
             -B build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "::endgroup::"
+
+          Write-Host "::group::JOIPEngine — CMake build"
           cmake --build build --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "::endgroup::"
+
+          Write-Host "::group::JOIPEngine — CMake install"
           cmake --build build --target install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "::endgroup::"
 
       - name: Resolve version and package name
         id: meta
