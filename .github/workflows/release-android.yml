@@ -1,0 +1,258 @@
+name: Release Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (e.g. v1.8.0). Leave empty to use v{version} from CMakeLists.txt'
+        required: false
+        type: string
+      android_abi:
+        description: 'Target ABI (one APK per workflow run)'
+        required: true
+        type: choice
+        default: arm64-v8a
+        options:
+          - arm64-v8a
+          - armeabi-v7a
+
+env:
+  QT_VERSION: '5.14.2'
+  CMAKE_BUILD_TYPE: Release
+  ANDROID_API: '21'
+  ANDROID_SDK_BUILD_TOOLS: '31.0.0'
+  ANDROID_NDK_VERSION: '21.3.6528147'
+  CCACHE_VERSION: '4.10.2'
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_BASEDIR: ${{ github.workspace }}
+  CCACHE_COMPRESS: true
+  CCACHE_COMPRESSLEVEL: 6
+  CCACHE_MAXSIZE: 2G
+  CCACHE_SLOPPINESS: time_macros,locale,pch_defines,include_file_mtime,include_file_ctime
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Map Qt arch for ABI
+        id: arch
+        run: |
+          case "${{ inputs.android_abi }}" in
+            arm64-v8a) echo "qt_arch=android_arm64_v8a" >> "$GITHUB_OUTPUT" ;;
+            armeabi-v7a) echo "qt_arch=android_armv7" >> "$GITHUB_OUTPUT" ;;
+            *) echo "Unsupported ABI: ${{ inputs.android_abi }}" >&2; exit 1 ;;
+          esac
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build perl pkg-config openjdk-11-jdk
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK components
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-31" \
+            "platforms;android-28" \
+            "platforms;android-21" \
+            "build-tools;${{ env.ANDROID_SDK_BUILD_TOOLS }}" \
+            "ndk;${{ env.ANDROID_NDK_VERSION }}"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK_VERSION }}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK_VERSION }}" >> "$GITHUB_ENV"
+          echo "CMAKE_ANDROID_NDK=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK_VERSION }}" >> "$GITHUB_ENV"
+          echo "ANDROID_ARCH_ABI=${{ inputs.android_abi }}" >> "$GITHUB_ENV"
+
+      - name: Setup ccache
+        run: |
+          curl -fsSL "https://github.com/ccache/ccache/releases/download/v${CCACHE_VERSION}/ccache-${CCACHE_VERSION}-linux-x86_64.tar.xz" -o /tmp/ccache.tar.xz
+          tar -xf /tmp/ccache.tar.xz -C /tmp
+          echo "/tmp/ccache-${CCACHE_VERSION}-linux-x86_64" >> "$GITHUB_PATH"
+          ccache --version
+          ccache -z
+          ccache -p
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: joip-ccache-android-${{ runner.os }}-qt${{ env.QT_VERSION }}-${{ inputs.android_abi }}-${{ hashFiles('.github/workflows/release-android.yml') }}
+          restore-keys: |
+            joip-ccache-android-${{ runner.os }}-qt${{ env.QT_VERSION }}-${{ inputs.android_abi }}-
+            joip-ccache-android-${{ runner.os }}-qt${{ env.QT_VERSION }}-
+
+      - name: Install Qt for Android
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: android
+          arch: ${{ steps.arch.outputs.qt_arch }}
+          cache: true
+          install-deps: false
+          setup-python: false
+
+      # QtAV .gitignore excludes *.so; copy prebuilt FFmpeg libs into the tree expected by CMake/pkg-config.
+      - name: Stage Android FFmpeg libs for QtAV
+        run: |
+          set -euo pipefail
+          dest="3rdparty/QtAV/ffmpeg/ffmpeg-4.2-android-clang"
+          abi="${{ inputs.android_abi }}"
+          mkdir -p "$dest/lib/$abi"
+          cache="/tmp/ffmpeg-android-clang.tar.xz"
+          urls=(
+            "https://master.dl.sourceforge.net/project/avbuild/android/ffmpeg-4.2-android-clang-lite.tar.xz"
+            "https://master.dl.sourceforge.net/project/avbuild/android/ffmpeg-4.2-android-clang.tar.xz"
+            "https://master.dl.sourceforge.net/project/avbuild/android/ffmpeg-4.2-android-lite.tar.xz"
+          )
+          for url in "${urls[@]}"; do
+            if curl -fsSL "$url" -o "$cache"; then
+              echo "Downloaded FFmpeg package: $url"
+              break
+            fi
+          done
+          if [ ! -s "$cache" ]; then
+            echo "Failed to download Android FFmpeg prebuilts" >&2
+            exit 1
+          fi
+          rm -rf /tmp/ffmpeg-android-extract
+          mkdir -p /tmp/ffmpeg-android-extract
+          tar -xf "$cache" -C /tmp/ffmpeg-android-extract
+          mapfile -t so_files < <(find /tmp/ffmpeg-android-extract -path "*/lib/${abi}/*.so" -type f)
+          if [ "${#so_files[@]}" -eq 0 ]; then
+            echo "No FFmpeg .so files found for ABI ${abi} in archive" >&2
+            find /tmp/ffmpeg-android-extract -maxdepth 4 -type d | head -40
+            exit 1
+          fi
+          cp -f "${so_files[@]}" "$dest/lib/$abi/"
+          ls -la "$dest/lib/$abi"
+
+      # jcenter() is offline; patch only for CI packaging (androiddeployqt runs Gradle).
+      - name: Patch Android Gradle repositories
+        run: |
+          sed -i 's/jcenter()/mavenCentral()/g' android-sources/build.gradle
+
+      - name: Build and install QtAV
+        run: |
+          set -euo pipefail
+          jobs=$(nproc)
+          toolchain="${{ github.workspace }}/cmake/ECM/share/ECM/toolchain/Android.cmake"
+          echo "::group::QtAV — CMake configure"
+          cmake -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
+            -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_ANDROID_NDK="$CMAKE_ANDROID_NDK" \
+            -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
+            -DANDROID_ABI=${{ inputs.android_abi }} \
+            -DANDROID_SDK_BUILD_TOOLS_REVISION=${{ env.ANDROID_SDK_BUILD_TOOLS }} \
+            -DCMAKE_ANDROID_API=${{ env.ANDROID_API }} \
+            -DECM_ADDITIONAL_FIND_ROOT_PATH="$QT_ROOT_DIR" \
+            -DQTDIR="$QT_ROOT_DIR" \
+            -DBUILD_EXAMPLES=OFF \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_PLAYERS=OFF \
+            -S 3rdparty/QtAV \
+            -B build-qtav-android
+          echo "::endgroup::"
+
+          echo "::group::QtAV — CMake build"
+          cmake --build build-qtav-android --parallel "$jobs"
+          echo "::endgroup::"
+
+          echo "::group::QtAV — CMake install"
+          cmake --install build-qtav-android
+          echo "::endgroup::"
+
+      - name: Build JOIPEngine and create APK
+        run: |
+          set -euo pipefail
+          jobs=$(nproc)
+          toolchain="${{ github.workspace }}/cmake/ECM/share/ECM/toolchain/Android.cmake"
+          echo "::group::JOIPEngine — CMake configure"
+          cmake -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
+            -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_ANDROID_NDK="$CMAKE_ANDROID_NDK" \
+            -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
+            -DANDROID_ABI=${{ inputs.android_abi }} \
+            -DANDROID_SDK_BUILD_TOOLS_REVISION=${{ env.ANDROID_SDK_BUILD_TOOLS }} \
+            -DCMAKE_ANDROID_API=${{ env.ANDROID_API }} \
+            -DQTANDROID_EXPORTED_TARGET=JOIPEngine \
+            -DANDROID_APK_DIR="${{ github.workspace }}/android-sources" \
+            -DECM_ADDITIONAL_FIND_ROOT_PATH="$QT_ROOT_DIR" \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -S . \
+            -B build-android
+          echo "::endgroup::"
+
+          echo "::group::JOIPEngine — CMake build"
+          cmake --build build-android --parallel "$jobs"
+          echo "::endgroup::"
+
+          echo "::group::JOIPEngine — Create APK"
+          cmake --build build-android --target create-apk-JOIPEngine
+          echo "::endgroup::"
+
+          echo "::group::ccache stats (final)"
+          ccache -s
+          echo "::endgroup::"
+
+      - name: Resolve version and package name
+        id: meta
+        run: |
+          major=$(grep -Po 'set\(JOIP_VERSION_MAJOR \K\d+' CMakeLists.txt)
+          minor=$(grep -Po 'set\(JOIP_VERSION_MINOR \K\d+' CMakeLists.txt)
+          patch=$(grep -Po 'set\(JOIP_VERSION_PATCH \K\d+' CMakeLists.txt)
+          version="${major}.${minor}.${patch}"
+          tag='${{ inputs.release_tag }}'
+          tag=$(echo "$tag" | xargs)
+          if [ -z "$tag" ]; then
+            tag="v${version}"
+          fi
+          asset="JOIPEngine-${version}-android-${{ inputs.android_abi }}.apk"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+
+      - name: Collect APK artifact
+        run: |
+          set -euo pipefail
+          apk_dir="build-android/JOIPEngine_build_apk"
+          built="${apk_dir}/JOIPEngine-${{ inputs.android_abi }}.apk"
+          if [ ! -f "$built" ]; then
+            echo "APK not found at expected path: $built" >&2
+            find build-android -name '*.apk' -print
+            exit 1
+          fi
+          cp -f "$built" "${{ steps.meta.outputs.asset }}"
+          ls -la "${{ steps.meta.outputs.asset }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.asset }}
+          path: ${{ steps.meta.outputs.asset }}
+          if-no-files-found: error
