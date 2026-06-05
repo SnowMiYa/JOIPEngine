@@ -13,6 +13,13 @@ env:
   QT_VERSION: '5.14.2'
   QT_ARCH: win64_msvc2017_64
   CMAKE_BUILD_TYPE: Release
+  CCACHE_VERSION: '4.10.2'
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_BASEDIR: ${{ github.workspace }}
+  CCACHE_COMPRESS: true
+  CCACHE_COMPRESSLEVEL: 6
+  CCACHE_MAXSIZE: 2G
+  CCACHE_SLOPPINESS: time_macros,locale,pch_defines,include_file_mtime,include_file_ctime
 
 jobs:
   build-and-release:
@@ -36,6 +43,31 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+
+      - name: Setup ccache
+        shell: pwsh
+        run: |
+          $ver = $env:CCACHE_VERSION
+          $url = "https://github.com/ccache/ccache/releases/download/v$ver/ccache-$ver-windows-x86_64.zip"
+          $zip = "$env:RUNNER_TEMP/ccache.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $dest = "$env:RUNNER_TEMP/ccache"
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          $ccacheExe = Get-ChildItem $dest -Recurse -Filter "ccache.exe" | Select-Object -First 1
+          if (-not $ccacheExe) { throw "ccache.exe not found in $dest" }
+          echo "$($ccacheExe.DirectoryName)" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          ccache --version
+          ccache -z
+          ccache -p
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: joip-ccache-${{ runner.os }}-qt${{ env.QT_VERSION }}-${{ hashFiles('.github/workflows/release-windows.yml') }}
+          restore-keys: |
+            joip-ccache-${{ runner.os }}-qt${{ env.QT_VERSION }}-
+            joip-ccache-${{ runner.os }}-
 
       # Default install includes Qt Base / 3D / Multimedia / QML / etc.
       # `modules` is only for add-ons (qtcharts, qtwebengine, ...); see:
@@ -63,6 +95,8 @@ jobs:
       - name: Build and install QtAV
         shell: pwsh
         run: |
+          $jobs = [int]$env:NUMBER_OF_PROCESSORS
+          Write-Host "Ninja parallel jobs: $jobs"
           # Best-effort only (QtAV CMake unchanged): expose depends headers/libs to MSVC probes
           $av = (Resolve-Path "3rdparty/QtAV/ffmpeg/QtAV-depends-windows-x86+x64").Path
           $env:INCLUDE = "$av/include;$env:QT_ROOT_DIR/include;$env:INCLUDE"
@@ -70,6 +104,8 @@ jobs:
           Write-Host "::group::QtAV — CMake configure"
           cmake -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache `
             -DQTDIR="$env:QT_ROOT_DIR" `
             -DBUILD_EXAMPLES=OFF `
             -DBUILD_TESTS=OFF `
@@ -80,7 +116,7 @@ jobs:
           Write-Host "::endgroup::"
 
           Write-Host "::group::QtAV — CMake build"
-          cmake --build build-qtav --parallel
+          cmake --build build-qtav --parallel $jobs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Host "::endgroup::"
 
@@ -89,12 +125,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Host "::endgroup::"
 
+          Write-Host "::group::ccache stats (after QtAV)"
+          ccache -s
+          Write-Host "::endgroup::"
+
       - name: Build and install JOIPEngine
         shell: pwsh
         run: |
+          $jobs = [int]$env:NUMBER_OF_PROCESSORS
+          Write-Host "Ninja parallel jobs: $jobs"
           Write-Host "::group::JOIPEngine — CMake configure"
           cmake -G Ninja `
             -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} `
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
             -S . `
             -B build
@@ -102,13 +146,17 @@ jobs:
           Write-Host "::endgroup::"
 
           Write-Host "::group::JOIPEngine — CMake build"
-          cmake --build build --parallel
+          cmake --build build --parallel $jobs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Host "::endgroup::"
 
           Write-Host "::group::JOIPEngine — CMake install"
           cmake --build build --target install
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "::endgroup::"
+
+          Write-Host "::group::ccache stats (final)"
+          ccache -s
           Write-Host "::endgroup::"
 
       - name: Resolve version and package name
